@@ -2,24 +2,17 @@ package com.yourname.newsreader.ui.navigation
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.lifecycle.SavedStateHandle
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
-import com.yourname.newsreader.data.repository.MockNewsRepository
 import com.yourname.newsreader.ui.screens.articledetail.ArticleDetailScreen
 import com.yourname.newsreader.ui.screens.articledetail.ArticleDetailViewModel
-import com.yourname.newsreader.ui.screens.articledetail.ArticleDetailViewModelFactory
 import com.yourname.newsreader.ui.screens.articlelist.ArticleListScreen
 import com.yourname.newsreader.ui.screens.articlelist.ArticleListViewModel
-import com.yourname.newsreader.ui.screens.articlelist.ArticleListViewModelFactory
 
-/**
- * Navigation routes for the app.
- */
 sealed class Screen(val route: String) {
     data object ArticleList : Screen("article_list")
     data object ArticleDetail : Screen("article_detail/{articleId}") {
@@ -28,31 +21,54 @@ sealed class Screen(val route: String) {
 }
 
 /**
- * Main navigation graph for the app.
+ * Main navigation graph — dramatically simplified by Hilt.
+ *
+ * ─── What changed from Chapter 5 ──────────────────────────────────────────────
+ *
+ * BEFORE (Chapter 5 — manual wiring):
+ *   val repository = MockNewsRepository()               // create dependency
+ *   val viewModel = viewModel(                          // create VM with factory
+ *       factory = ArticleListViewModelFactory(
+ *           repository = repository,
+ *           savedStateHandle = SavedStateHandle()
+ *       )
+ *   )
+ *
+ * AFTER (Chapter 6 — Hilt):
+ *   val viewModel: ArticleListViewModel = hiltViewModel()   // that's it
+ *
+ * ─── hiltViewModel() under the hood ──────────────────────────────────────────
+ * hiltViewModel() (from hilt-navigation-compose) does three things:
+ *
+ *   1. Asks Hilt to construct the ViewModel, resolving the entire dependency
+ *      tree: NewsRepository → NewsRepositoryImpl → ArticleDao + RemoteDataSource
+ *      + UserPreferencesDataStore.
+ *
+ *   2. Scopes the ViewModel to the current NavBackStackEntry's lifecycle
+ *      (not the Activity). The ViewModel is cleared when the back-stack entry
+ *      is popped — correct memory management.
+ *
+ *   3. Passes the NavBackStackEntry's SavedStateHandle to the ViewModel.
+ *      For ArticleDetailViewModel, the "articleId" route argument is already
+ *      in this SavedStateHandle — so savedStateHandle.get<String>("articleId")
+ *      still works with zero changes to the ViewModel logic.
+ *
+ * The ViewModel factory classes (ArticleListViewModelFactory,
+ * ArticleDetailViewModelFactory) are now deleted — Hilt generates them.
  */
 @Composable
 fun NewsNavGraph(
     navController: NavHostController,
     modifier: Modifier = Modifier
 ) {
-    // Create repository instance
-    // In later chapters, this will be injected via Hilt
-    val repository = MockNewsRepository()
-
     NavHost(
         navController = navController,
         startDestination = Screen.ArticleList.route,
         modifier = modifier
     ) {
-        // Article List Screen
         composable(Screen.ArticleList.route) {
-            val viewModel: ArticleListViewModel = viewModel(
-                factory = ArticleListViewModelFactory(
-                    repository = repository,
-                    savedStateHandle = SavedStateHandle()
-                )
-            )
-
+            // Hilt resolves the full dependency graph automatically.
+            val viewModel: ArticleListViewModel = hiltViewModel()
             ArticleListScreen(
                 viewModel = viewModel,
                 onNavigateToDetail = { articleId ->
@@ -61,32 +77,16 @@ fun NewsNavGraph(
             )
         }
 
-        // Article Detail Screen
         composable(
             route = Screen.ArticleDetail.route,
-            arguments = listOf(
-                navArgument("articleId") {
-                    type = NavType.StringType
-                }
-            )
-        ) { backStackEntry ->
-            val articleId = backStackEntry.arguments?.getString("articleId") ?: ""
-            val savedStateHandle = SavedStateHandle().apply {
-                set(ArticleDetailViewModel.ARG_ARTICLE_ID, articleId)
-            }
-
-            val viewModel: ArticleDetailViewModel = viewModel(
-                factory = ArticleDetailViewModelFactory(
-                    repository = repository,
-                    savedStateHandle = savedStateHandle
-                )
-            )
-
+            arguments = listOf(navArgument("articleId") { type = NavType.StringType })
+        ) {
+            // Navigation Compose puts "articleId" into this entry's SavedStateHandle
+            // before creating the ViewModel — no manual SavedStateHandle setup needed.
+            val viewModel: ArticleDetailViewModel = hiltViewModel()
             ArticleDetailScreen(
                 viewModel = viewModel,
-                onNavigateBack = {
-                    navController.popBackStack()
-                }
+                onNavigateBack = { navController.popBackStack() }
             )
         }
     }

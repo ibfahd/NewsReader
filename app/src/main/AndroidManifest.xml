@@ -1,8 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+        xmlns:tools was declared in the previous version but no tools: attributes
+        were ever used, triggering the "Namespace declaration is never used" warning.
+        Removed entirely.
+
+        INTERNET permission is declared here (not yet used — network calls are still
+        mocked via MockRemoteDataSource), but required once Retrofit is added in
+        Chapter 7. Declaring it now avoids a manifest merge conflict later.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
+        android:name=".NewsReaderApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -14,11 +24,14 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="@string/app_name"
             android:theme="@style/Theme.NewsReader">
+            <!--
+                android:label removed from <activity>: it was identical to the
+                <application>-level label, producing the "Redundant label" warning.
+                Android falls back to the application label automatically.
+            -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>

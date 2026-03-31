@@ -1,91 +1,35 @@
 package com.yourname.newsreader.ui.screens.articlelist
 
-import com.yourname.newsreader.data.model.Article
 import com.yourname.newsreader.data.model.Category
 
 /**
- * UI state for the Article List screen.
- * 
- * This sealed interface represents all possible states:
- * - Loading: Initial load or refresh
- * - Success: Articles loaded successfully
- * - Error: Something went wrong
- * 
- * Using a sealed interface ensures exhaustive when statements
- * and makes it impossible to have invalid state combinations.
+ * Ch.7: The state model is significantly simplified.
+ *
+ * In Chapter 6, [ArticleListState] was a sealed interface with Loading, Success,
+ * and Error states because we managed all loading states manually. In Chapter 7,
+ * Paging 3 manages loading states through [LazyPagingItems.loadState] —
+ * a richer, more granular state that knows whether the initial load, a prepend,
+ * or an append is in progress, and which operation errored.
+ *
+ * What this class now tracks is the UI state that Paging does NOT manage:
+ *   - Which category filter is selected.
+ *   - Which articles are favourited.
+ *
+ * The article list content itself is driven by [LazyPagingItems<Article>],
+ * which is collected directly in the composable from the ViewModel's paging flow.
  */
-sealed interface ArticleListState {
-    /**
-     * Loading state - shown during initial load or refresh
-     */
-    data object Loading : ArticleListState
-    
-    /**
-     * Success state - articles loaded and ready to display
-     * 
-     * @param articles List of articles to display
-     * @param selectedCategory Currently selected category filter
-     * @param favoriteIds Set of favorite article IDs
-     * @param isRefreshing Whether a refresh is in progress
-     */
-    data class Success(
-        val articles: List<Article>,
-        val selectedCategory: Category?,
-        val favoriteIds: Set<String>,
-        val isRefreshing: Boolean = false
-    ) : ArticleListState
-    
-    /**
-     * Error state - something went wrong
-     * 
-     * @param message Error message to display
-     * @param canRetry Whether the user can retry the operation
-     */
-    data class Error(
-        val message: String,
-        val canRetry: Boolean = true
-    ) : ArticleListState
-}
+data class ArticleListUiState(
+    val selectedCategory: Category? = null,
+    val favoriteIds: Set<String> = emptySet()
+)
 
 /**
- * Events that can be sent from the UI to the ViewModel.
- * 
- * This pattern ensures clear separation between UI and business logic.
- * The UI sends events, the ViewModel processes them and updates state.
+ * Events from UI to ViewModel — unchanged from Chapter 6 except
+ * [Refresh] and [Retry] are now handled by calling [LazyPagingItems.refresh]
+ * directly in the composable rather than going through the ViewModel.
  */
 sealed interface ArticleListEvent {
-    /**
-     * User requested a refresh (pull-to-refresh)
-     */
-    data object Refresh : ArticleListEvent
-    
-    /**
-     * User selected a category filter
-     * 
-     * @param category The selected category, or null for all
-     */
     data class SelectCategory(val category: Category?) : ArticleListEvent
-    
-    /**
-     * User toggled favorite status
-     * 
-     * @param articleId The article ID
-     * @param isFavorite New favorite status
-     */
-    data class ToggleFavorite(
-        val articleId: String,
-        val isFavorite: Boolean
-    ) : ArticleListEvent
-    
-    /**
-     * User tapped on an article
-     * 
-     * @param articleId The article ID
-     */
+    data class ToggleFavorite(val articleId: String, val isFavorite: Boolean) : ArticleListEvent
     data class ArticleClicked(val articleId: String) : ArticleListEvent
-    
-    /**
-     * User requested to retry after an error
-     */
-    data object Retry : ArticleListEvent
 }

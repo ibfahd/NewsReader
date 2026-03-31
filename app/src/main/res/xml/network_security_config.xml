@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Network Security Configuration — applied via AndroidManifest.xml.
+
+    Android allows cleartext HTTP traffic by default on API < 28, and blocks it
+    on API 28+. This file makes the policy explicit and consistent across ALL
+    API levels.
+
+    What this config does:
+    ─ cleartextTrafficPermitted="false" — blocks all plain HTTP (no HTTPS = no
+      connection). This prevents accidental cleartext requests AND makes
+      man-in-the-middle attacks significantly harder, since there is no
+      unencrypted channel to intercept.
+
+    ─ <trust-anchors><certificates src="system"/> — trust only certificates
+      from the system trust store. This prevents user-installed CA certificates
+      (which could be used in MITM proxies) from being trusted by this app.
+
+    Production hardening (beyond this chapter):
+    Add certificate pinning via <pin-set> to reject any certificate not matching
+    your server's known public key hash, even if signed by a trusted CA:
+
+        <domain-config cleartextTrafficPermitted="false">
+            <domain includeSubdomains="true">newsapi.org</domain>
+            <pin-set>
+                <pin digest="SHA-256">YOUR_BASE64_PIN_HERE</pin>
+                <pin digest="SHA-256">YOUR_BACKUP_PIN_HERE</pin>
+            </pin-set>
+        </domain-config>
+
+    Always include a backup pin — if the primary certificate rotates and you
+    have no backup pin, your app loses connectivity for all users until an
+    update ships.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -7,58 +7,51 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
- * The Room database — single entry point for all local persistence.
- *
- * ─── Architecture ─────────────────────────────────────────────────────────────
- *   ViewModel → Repository → ArticleDao → NewsDatabase → SQLite file
- *
- * Room generates the concrete implementation (NewsDatabase_Impl) at compile
- * time, so this class stays abstract. The singleton instance is created once
- * in DatabaseModule and shared across the entire app via Hilt.
- *
- * ─── Schema versioning & migrations ──────────────────────────────────────────
- * [version] must be incremented every time the schema changes. Without a
- * matching Migration, existing users' data is inaccessible (or wiped if
- * fallbackToDestructiveMigration is enabled).
- *
- * Migration pattern (example: adding a "isBookmarked" column in v2):
- *
- *   val MIGRATION_1_2 = object : Migration(1, 2) {
- *       override fun migrate(db: SupportSQLiteDatabase) {
- *           db.execSQL(
- *               "ALTER TABLE articles ADD COLUMN isBookmarked INTEGER NOT NULL DEFAULT 0"
- *           )
- *       }
- *   }
- *
- * Then register it in DatabaseModule:
- *   .addMigrations(NewsDatabase.MIGRATION_1_2)
- *
- * ─── Schema export ────────────────────────────────────────────────────────────
- * [exportSchema = true] (configured via KSP arg "room.schemaLocation") writes
- * a JSON snapshot of the schema to /schemas/<version>.json. Commit these files
- * — they're your migration audit trail and can be used in MigrationTestHelper.
+ * Ch.7 changes:
+ *   - [version] bumped from 1 → 2.
+ *   - [RemoteKeyEntity] added to [entities].
+ *   - [remoteKeyDao] abstract function added.
+ *   - [MIGRATION_1_2] defined: creates the "remote_keys" table.
+ *     In [DatabaseModule], swap [fallbackToDestructiveMigration] for
+ *     [.addMigrations(MIGRATION_1_2)] before shipping to production.
  */
 @Database(
-    entities = [ArticleEntity::class],
-    version = 1,
+    entities = [ArticleEntity::class, RemoteKeyEntity::class],
+    version = 2,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
 abstract class NewsDatabase : RoomDatabase() {
 
-    /** Room generates the concrete ArticleDao_Impl at compile time. */
     abstract fun articleDao(): ArticleDao
+    abstract fun remoteKeyDao(): RemoteKeyDao
 
     companion object {
         const val DATABASE_NAME = "news_reader.db"
 
-        // ── Example migrations (uncomment when bumping version) ────────────────
-        //
-        // val MIGRATION_1_2 = object : Migration(1, 2) {
-        //     override fun migrate(db: SupportSQLiteDatabase) {
-        //         db.execSQL("ALTER TABLE articles ADD COLUMN isBookmarked INTEGER NOT NULL DEFAULT 0")
-        //     }
-        // }
+        /**
+         * Migration from v1 → v2: add the remote_keys table.
+         *
+         * ALTER TABLE cannot create new tables — we use CREATE TABLE instead.
+         * The column types match exactly what Room would generate for
+         * [RemoteKeyEntity]: TEXT PRIMARY KEY, TEXT nullable, INTEGER nullable.
+         *
+         * To apply in production, replace [fallbackToDestructiveMigration] in
+         * [DatabaseModule] with [.addMigrations(MIGRATION_1_2)].
+         */
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS remote_keys (
+                        articleId TEXT NOT NULL PRIMARY KEY,
+                        category TEXT,
+                        prevKey INTEGER,
+                        nextKey INTEGER
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
     }
 }

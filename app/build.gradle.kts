@@ -1,12 +1,24 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
-    // kotlin-android is REMOVED — AGP 9.0 provides Kotlin support built-in.
-    // kotlin-compose IS still required: it configures the Compose compiler plugin,
-    // which is separate from general Kotlin/Android support.
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.hilt.android)
     alias(libs.plugins.ksp)
     alias(libs.plugins.room)
+}
+
+// ── API key loading ───────────────────────────────────────────────────────────
+// Read local.properties at configuration time. This file is in .gitignore and
+// must never be committed. The key is injected into BuildConfig as a string
+// constant, making it accessible in Kotlin code via BuildConfig.NEWS_API_KEY.
+//
+// This is NOT fully secure — the key is still present in the compiled APK and
+// can be extracted with tools like apktool. Section 7.3 discusses this trade-off
+// and points to the Secrets Gradle Plugin for improved obfuscation.
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) load(file.inputStream())
 }
 
 android {
@@ -21,6 +33,15 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "com.yourname.newsreader.HiltTestRunner"
+
+        // Inject the API key into the BuildConfig class generated at compile time.
+        // The empty string fallback prevents crashes during CI where local.properties
+        // won't exist — the network calls will simply fail with an auth error.
+        buildConfigField(
+            "String",
+            "NEWS_API_KEY",
+            "\"${localProperties.getProperty("NEWS_API_KEY", "")}\""
+        )
     }
 
     buildTypes {
@@ -34,20 +55,18 @@ android {
     }
 
     compileOptions {
-        // AGP 9.0 unified config: compileOptions sets the JVM target for both
-        // the Java and Kotlin compilers. No kotlinOptions block is needed or valid.
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
 
     buildFeatures {
         compose = true
+        // BuildConfig generation must be explicitly enabled in AGP 8+.
+        // Without this, BuildConfig.NEWS_API_KEY would not compile.
+        buildConfig = true
     }
 }
 
-// Room 2.7+ Gradle plugin DSL — replaces the old ksp { arg("room.schemaLocation",...) }.
-// Requires alias(libs.plugins.room) to be applied in the plugins {} block above.
-// The /schemas directory should be committed to version control.
 room {
     schemaDirectory("$projectDir/schemas")
 }
@@ -83,10 +102,23 @@ dependencies {
     // Room
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
+    implementation(libs.room.paging)     // Ch.7: PagingSource from Room queries
     ksp(libs.room.compiler)
 
     // DataStore
     implementation(libs.datastore.preferences)
+
+    // ── Ch.7: Networking ─────────────────────────────────────────────────────
+    implementation(libs.retrofit)
+    implementation(libs.retrofit.converter.moshi)
+    implementation(libs.okhttp)
+    implementation(libs.okhttp.logging)
+    implementation(libs.moshi.kotlin)
+    ksp(libs.moshi.kotlin.codegen)       // Generates JsonAdapter classes at compile time
+
+    // ── Ch.7: Paging 3 ───────────────────────────────────────────────────────
+    implementation(libs.paging.runtime)
+    implementation(libs.paging.compose)
 
     // Unit tests
     testImplementation(libs.junit)

@@ -1,5 +1,6 @@
 package com.yourname.newsreader.ui.navigation
 
+import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -16,7 +17,7 @@ import com.yourname.newsreader.ui.screens.articlelist.ArticleListViewModel
 sealed class Screen(val route: String) {
     data object ArticleList : Screen("article_list")
     data object ArticleDetail : Screen("article_detail/{articleId}") {
-        fun createRoute(articleId: String) = "article_detail/$articleId"
+        fun createRoute(articleId: String) = "article_detail/${Uri.encode(articleId)}"
     }
 }
 

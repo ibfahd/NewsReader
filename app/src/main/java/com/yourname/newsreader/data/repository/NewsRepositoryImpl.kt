@@ -1,11 +1,19 @@
 package com.yourname.newsreader.data.repository
 
+import androidx.paging.ExperimentalPagingApi
+import androidx.paging.Pager
+import androidx.paging.PagingConfig
+import androidx.paging.PagingData
+import androidx.paging.map
 import com.yourname.newsreader.data.local.ArticleDao
+import com.yourname.newsreader.data.local.NewsDatabase
 import com.yourname.newsreader.data.local.toDomain
 import com.yourname.newsreader.data.local.toEntity
 import com.yourname.newsreader.data.model.Article
 import com.yourname.newsreader.data.model.Category
+import com.yourname.newsreader.data.paging.ArticleRemoteMediator
 import com.yourname.newsreader.data.preferences.UserPreferencesDataStore
+import com.yourname.newsreader.data.remote.NewsApiService
 import com.yourname.newsreader.data.remote.RemoteDataSource
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -13,121 +21,86 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Production implementation of [NewsRepository].
- * Replaces [MockNewsRepository] from Chapter 5.
- *
- * ─── Offline-First Architecture ───────────────────────────────────────────────
- * The Room database is the SINGLE SOURCE OF TRUTH. The UI never reads from
- * the network directly — it only observes Room, and the Repository syncs Room
- * with the network in the background.
- *
- *   ┌──────┐     Flow      ┌──────┐   reactive   ┌────────────────┐
- *   │  UI  │ ─────────────▶│  VM  │◀────────────▶│ NewsRepository │
- *   └──────┘               └──────┘              └────────┬───────┘
- *                                                          │
- *                                    ┌─────────────────────┤
- *                                    ▼                     ▼
- *                              ┌──────────┐         ┌──────────────┐
- *                              │   Room   │◀───────▶│ RemoteSource │
- *                              └──────────┘  writes └──────────────┘
- *
- * ─── Caching layers ───────────────────────────────────────────────────────────
- *   L1 — In-memory LRU   fast O(1) dict lookup    article detail screen
- *   L2 — Room / SQLite   persistent across restarts  article list
- *   L3 — Network         source of fresh content   triggered by refresh
- *
- * ─── Hilt annotations ─────────────────────────────────────────────────────────
- * @Singleton  — one instance per app; the LRU cache lives in this instance.
- * @Inject     — Hilt resolves: ArticleDao (from DatabaseModule),
- *               RemoteDataSource (bound to MockRemoteDataSource in RepositoryModule),
- *               UserPreferencesDataStore (injectable directly via @Singleton + @Inject).
+ * Ch.7 changes:
+ *   - [NewsApiService] added as a constructor parameter (used by RemoteMediator).
+ *   - [NewsDatabase] added as a constructor parameter (needed by RemoteMediator
+ *     for [withTransaction], which requires the full database object).
+ *   - [getPagedArticles] implemented using [Pager] + [ArticleRemoteMediator].
+ *   - The in-memory LRU cache and all other behaviour are unchanged.
  */
 @Singleton
 class NewsRepositoryImpl @Inject constructor(
     private val articleDao: ArticleDao,
+    private val db: NewsDatabase,
     private val remoteDataSource: RemoteDataSource,
+    private val apiService: NewsApiService,
     private val userPreferences: UserPreferencesDataStore
 ) : NewsRepository {
 
-    // ─── L1: In-memory LRU cache ──────────────────────────────────────────────
-    // A LinkedHashMap in access-order mode acts as a perfect LRU cache:
-    // - removeEldestEntry evicts the least-recently-used entry when full.
-    // - Cost: a few KB of memory for up to 50 articles.
-    // - Benefit: O(1) lookup for the detail screen — no DB round-trip.
-    //
-    // Note: Not thread-safe by itself. Since all repository calls are on
-    // coroutine dispatchers (not raw threads), single-coroutine access is fine.
-    // For multi-thread safety, wrap in Collections.synchronizedMap() or use
-    // a concurrent map (at the cost of slightly higher overhead).
-    private val memoryCache = object : LinkedHashMap<String, Article>(
-        32, 0.75f, /* accessOrder = */ true
-    ) {
+    // ─── L1: In-memory LRU cache (unchanged from Ch.6) ───────────────────────
+    private val memoryCache = object : LinkedHashMap<String, Article>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: Map.Entry<String, Article>) =
             size > MAX_MEMORY_CACHE_SIZE
     }
 
-    // ─── Reactive article stream ──────────────────────────────────────────────
-
-    /**
-     * Observe articles as a reactive Flow from Room.
-     *
-     * Key behaviour:
-     * - Emits immediately with cached data (instant UI, works offline).
-     * - Re-emits automatically whenever [refreshArticles] writes new data to Room.
-     * - The ViewModel never needs to know whether data came from network or cache.
-     *
-     * [category] is passed directly to the DAO query — the SQL WHERE clause
-     * handles null (= all categories) vs a specific value.
-     */
     override fun getArticles(category: Category?): Flow<List<Article>> =
-        articleDao.getArticles(category?.name)
-            .map { entities ->
-                entities.map { entity ->
-                    entity.toDomain().also { article ->
-                        // "Free" L1 warm-up: populate cache on every DB read.
-                        // The detail screen benefits from this immediately.
-                        memoryCache[article.id] = article
-                    }
-                }
+        articleDao.getArticles(category?.name).map { entities ->
+            entities.map { entity ->
+                entity.toDomain().also { memoryCache[it.id] = it }
             }
-
-    // ─── Single-article lookup ────────────────────────────────────────────────
+        }
 
     /**
-     * Fetch one article, checking cache layers in order:
-     *   L1 (memory)  → L2 (Room).
+     * Creates a [Pager] that wires together the [ArticleRemoteMediator]
+     * and Room's [PagingSource].
      *
-     * No network call here — if the article isn't in L1 or L2, it means the
-     * detail screen was opened before the initial refresh completed (edge case).
-     * In that scenario, null is returned and the detail screen shows an error.
+     * ─── How Pager works ──────────────────────────────────────────────────────
+     * [Pager] is the entry point for Paging 3. It accepts three things:
+     *
+     * 1. [PagingConfig] — controls how pages are loaded:
+     *    - [pageSize]: how many items to load per batch. 20 fits NewsAPI's
+     *      free tier comfortably.
+     *    - [enablePlaceholders]: if true, the list shows null items for
+     *      positions not yet loaded (useful for fixed-size grids). We set it
+     *      to false because article lists are variable-height.
+     *    - [prefetchDistance]: Paging starts fetching the next page when the
+     *      user is this many items from the end. Default is pageSize, which
+     *      means loading starts before the user actually runs out of items.
+     *
+     * 2. [remoteMediator]: our [ArticleRemoteMediator] — handles network fetches
+     *    and Room writes.
+     *
+     * 3. [pagingSourceFactory]: a lambda that Room calls every time it needs a
+     *    fresh [PagingSource] — for example, after the mediator writes new rows
+     *    (which invalidates the current PagingSource).
+     *
+     * The [.flow] extension converts the Pager into a cold [Flow<PagingData<T>>].
+     * The [.map { pagingData -> pagingData.map { it.toDomain() } }] transforms
+     * each page's entities into domain objects as they are loaded, keeping Room
+     * concerns out of the UI layer.
      */
-    override suspend fun getArticleById(articleId: String): Article? {
-        // L1: memory hit — instant, no coroutine suspension
-        memoryCache[articleId]?.let { return it }
+    @OptIn(ExperimentalPagingApi::class)
+    override fun getPagedArticles(category: Category?): Flow<PagingData<Article>> =
+        Pager(
+            config = PagingConfig(
+                pageSize = NewsApiService.PAGE_SIZE,
+                enablePlaceholders = false
+            ),
+            remoteMediator = ArticleRemoteMediator(
+                category = category,
+                apiService = apiService,
+                db = db
+            ),
+            pagingSourceFactory = { articleDao.getArticlesPagingSource(category?.name) }
+        ).flow.map { pagingData -> pagingData.map { it.toDomain() } }
 
-        // L2: Room hit — brief suspension, but no network I/O
+    override suspend fun getArticleById(articleId: String): Article? {
+        memoryCache[articleId]?.let { return it }
         return articleDao.getArticleById(articleId)
             ?.toDomain()
-            ?.also { article -> memoryCache[article.id] = article } // warm L1
+            ?.also { memoryCache[it.id] = it }
     }
 
-    // ─── Network refresh ──────────────────────────────────────────────────────
-
-    /**
-     * Fetch fresh articles from the remote source and persist them to Room.
-     *
-     * After this function returns:
-     *   - Room contains the latest articles.
-     *   - The reactive Flow from [getArticles] automatically re-emits.
-     *   - The ViewModel's UI state updates without any manual wiring.
-     *   - The memory cache is cleared so the next detail-screen open reads
-     *     fresh data from Room (re-warming the cache).
-     *
-     * Performance: [insertArticles] wraps all rows in a single SQLite
-     * transaction — roughly 10× faster than individual inserts for large lists.
-     *
-     * @throws Exception if the network call fails (caller handles this).
-     */
     override suspend fun refreshArticles() {
         val remoteArticles = remoteDataSource.fetchArticles()
         articleDao.insertArticles(remoteArticles.map { it.toEntity() })
@@ -135,18 +108,13 @@ class NewsRepositoryImpl @Inject constructor(
         userPreferences.updateLastRefreshTimestamp()
     }
 
-    // ─── Favourites (delegated to DataStore) ──────────────────────────────────
-
-    /** Delegates to DataStore's atomic, coroutine-safe write. */
     override suspend fun toggleFavorite(articleId: String, isFavorite: Boolean) =
         userPreferences.toggleFavorite(articleId, isFavorite)
 
-    /** Exposes DataStore's reactive favourites Flow directly. */
     override fun getFavoriteIds(): Flow<Set<String>> =
         userPreferences.getFavoriteIds()
 
     companion object {
-        /** Maximum articles held in the in-memory LRU cache. */
         private const val MAX_MEMORY_CACHE_SIZE = 50
     }
 }

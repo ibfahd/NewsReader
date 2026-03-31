@@ -5,11 +5,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -35,23 +36,24 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.paging.LoadState
+import androidx.paging.compose.LazyPagingItems
+import androidx.paging.compose.collectAsLazyPagingItems
 import com.yourname.newsreader.data.model.Article
 import com.yourname.newsreader.data.model.Category
 import java.text.SimpleDateFormat
 import java.util.Locale
 
 /**
- * Article List Screen - Route-level composable.
- * 
- * This is the screen-level composable that:
- * - Observes ViewModel state
- * - Handles navigation events
- * - Delegates to stateless UI components
- * 
- * Following state hoisting patterns:
- * - State flows down from ViewModel
- * - Events flow up to ViewModel
- * - UI is declarative and testable
+ * Ch.7: The screen now works with [LazyPagingItems] for the article list.
+ *
+ * [collectAsLazyPagingItems] subscribes to the ViewModel's paging flow and
+ * returns a [LazyPagingItems] object that provides:
+ *   - [itemCount]: how many items are currently available.
+ *   - [get(index)]: the item at a position (null if not yet loaded).
+ *   - [loadState]: the current loading state for refresh, prepend, and append.
+ *   - [refresh()]: trigger a full refresh (calls RemoteMediator with REFRESH).
+ *   - [retry()]: retry a failed load.
  */
 @Composable
 fun ArticleListScreen(
@@ -59,41 +61,33 @@ fun ArticleListScreen(
     onNavigateToDetail: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Collect state from ViewModel
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    
-    // Handle one-time navigation events
+
+    // collectAsLazyPagingItems MUST be called in the composable — not in the ViewModel.
+    // This ensures the Paging library's lifecycle is tied to the composition.
+    val pagingItems = viewModel.articlePagingFlow.collectAsLazyPagingItems()
+
     LaunchedEffect(Unit) {
         viewModel.navigationEvents.collect { event ->
             when (event) {
-                is NavigationEvent.NavigateToDetail -> {
-                    onNavigateToDetail(event.articleId)
-                }
+                is NavigationEvent.NavigateToDetail -> onNavigateToDetail(event.articleId)
             }
         }
     }
-    
-    // Delegate to stateless content composable
+
     ArticleListContent(
         uiState = uiState,
+        pagingItems = pagingItems,
         onEvent = viewModel::onEvent,
         modifier = modifier
     )
 }
 
-/**
- * Stateless content composable.
- * 
- * Benefits of being stateless:
- * - Easy to preview
- * - Easy to test
- * - Can be reused
- * - Clear contract via parameters
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ArticleListContent(
-    uiState: ArticleListState,
+    uiState: ArticleListUiState,
+    pagingItems: LazyPagingItems<Article>,
     onEvent: (ArticleListEvent) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -102,129 +96,129 @@ fun ArticleListContent(
             TopAppBar(
                 title = { Text("News Reader") },
                 actions = {
-                    IconButton(onClick = { onEvent(ArticleListEvent.Refresh) }) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Refresh"
-                        )
+                    // The refresh button now calls pagingItems.refresh() directly.
+                    // This triggers LoadType.REFRESH in ArticleRemoteMediator, which
+                    // clears old data and fetches a fresh first page.
+                    IconButton(onClick = { pagingItems.refresh() }) {
+                        Icon(imageVector = Icons.Default.Refresh, contentDescription = "Refresh")
                     }
                 }
             )
         },
         modifier = modifier
     ) { paddingValues ->
-        when (uiState) {
-            is ArticleListState.Loading -> {
-                LoadingState(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(paddingValues)
-                )
-            }
-            
-            is ArticleListState.Success -> {
-                SuccessState(
-                    articles = uiState.articles,
-                    selectedCategory = uiState.selectedCategory,
-                    favoriteIds = uiState.favoriteIds,
-                    isRefreshing = uiState.isRefreshing,
-                    onEvent = onEvent,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(paddingValues)
-                )
-            }
-            
-            is ArticleListState.Error -> {
-                ErrorState(
-                    message = uiState.message,
-                    canRetry = uiState.canRetry,
-                    onRetry = { onEvent(ArticleListEvent.Retry) },
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(paddingValues)
-                )
-            }
-        }
-    }
-}
-
-/**
- * Loading state composable.
- */
-@Composable
-private fun LoadingState(
-    modifier: Modifier = Modifier
-) {
-    Box(
-        modifier = modifier,
-        contentAlignment = Alignment.Center
-    ) {
-        CircularProgressIndicator()
-    }
-}
-
-/**
- * Success state composable with pull-to-refresh.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SuccessState(
-    articles: List<Article>,
-    selectedCategory: Category?,
-    favoriteIds: Set<String>,
-    isRefreshing: Boolean,
-    onEvent: (ArticleListEvent) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Column(modifier = modifier) {
-        // Category filters
-        CategoryFilters(
-            selectedCategory = selectedCategory,
-            onCategorySelected = { category ->
-                onEvent(ArticleListEvent.SelectCategory(category))
-            },
-            modifier = Modifier.fillMaxWidth()
-        )
-        
-        // Article list with pull-to-refresh
-        PullToRefreshBox(
-            isRefreshing = isRefreshing,
-            onRefresh = { onEvent(ArticleListEvent.Refresh) },
-            modifier = Modifier.fillMaxSize()
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
         ) {
-            if (articles.isEmpty()) {
-                EmptyState(
-                    selectedCategory = selectedCategory,
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(
-                        items = articles,
-                        key = { it.id }
-                    ) { article ->
-                        ArticleCard(
-                            article = article,
-                            isFavorite = article.id in favoriteIds,
-                            onArticleClick = {
-                                onEvent(ArticleListEvent.ArticleClicked(article.id))
-                            },
-                            onFavoriteClick = { isFavorite ->
-                                onEvent(
-                                    ArticleListEvent.ToggleFavorite(
-                                        articleId = article.id,
-                                        isFavorite = isFavorite
-                                    )
+            CategoryFilters(
+                selectedCategory = uiState.selectedCategory,
+                onCategorySelected = { onEvent(ArticleListEvent.SelectCategory(it)) }
+            )
+
+            // ─── State routing via loadState ───────────────────────────────
+            // loadState.refresh reflects the state of the most recent REFRESH
+            // load — the initial load or a user-triggered refresh.
+            //
+            // loadState.append reflects appending more pages to the end of
+            // the list — triggered automatically as the user scrolls.
+            when {
+                // Full-screen loading: shown only on the very first load when
+                // the list is completely empty. After that, the existing items
+                // stay visible while new items are appended below.
+                pagingItems.loadState.refresh is LoadState.Loading
+                        && pagingItems.itemCount == 0 -> {
+                    FullScreenLoading()
+                }
+
+                // Full-screen error: shown if the initial load fails entirely.
+                pagingItems.loadState.refresh is LoadState.Error
+                        && pagingItems.itemCount == 0 -> {
+                    val error = (pagingItems.loadState.refresh as LoadState.Error).error
+                    FullScreenError(
+                        message = friendlyErrorMessage(error),
+                        onRetry = { pagingItems.refresh() }
+                    )
+                }
+
+                // Success or partial states: the list is shown, with load-more
+                // indicators or errors at the bottom.
+                else -> {
+                    // PullToRefreshBox integrates with loadState.refresh automatically.
+                    PullToRefreshBox(
+                        isRefreshing = pagingItems.loadState.refresh is LoadState.Loading,
+                        onRefresh = { pagingItems.refresh() },
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Article items. pagingItems[index] returns null for
+                            // placeholder positions — skip those gracefully.
+                            items(
+                                count = pagingItems.itemCount,
+                                key = { index -> pagingItems[index]?.id ?: index }
+                            ) { index ->
+                                val article = pagingItems[index] ?: return@items
+                                ArticleCard(
+                                    article = article,
+                                    isFavorite = article.id in uiState.favoriteIds,
+                                    onArticleClick = {
+                                        onEvent(ArticleListEvent.ArticleClicked(article.id))
+                                    },
+                                    onFavoriteClick = { isFavorite ->
+                                        onEvent(
+                                            ArticleListEvent.ToggleFavorite(
+                                                articleId = article.id,
+                                                isFavorite = isFavorite
+                                            )
+                                        )
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp)
                                 )
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp)
-                        )
+                            }
+
+                            // Append loading indicator — shown at the bottom while
+                            // the next page is being fetched as the user scrolls down.
+                            item {
+                                when (pagingItems.loadState.append) {
+                                    is LoadState.Loading -> {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(16.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            CircularProgressIndicator()
+                                        }
+                                    }
+                                    is LoadState.Error -> {
+                                        val error = (pagingItems.loadState.append as LoadState.Error).error
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(16.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            Text(
+                                                text = friendlyErrorMessage(error),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.error
+                                            )
+                                            Spacer(Modifier.height(8.dp))
+                                            Button(onClick = { pagingItems.retry() }) {
+                                                Text("Retry")
+                                            }
+                                        }
+                                    }
+                                    else -> Unit
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -232,9 +226,34 @@ private fun SuccessState(
     }
 }
 
-/**
- * Category filter chips.
- */
+// ─── Helper composables ───────────────────────────────────────────────────────
+
+@Composable
+private fun FullScreenLoading(modifier: Modifier = Modifier) {
+    Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        CircularProgressIndicator()
+    }
+}
+
+@Composable
+private fun FullScreenError(message: String, onRetry: () -> Unit, modifier: Modifier = Modifier) {
+    Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text("Something went wrong", style = MaterialTheme.typography.titleMedium)
+            Text(
+                message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Button(onClick = onRetry) { Text("Retry") }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CategoryFilters(
     selectedCategory: Category?,
@@ -245,7 +264,6 @@ private fun CategoryFilters(
         modifier = modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // "All" filter
         item {
             FilterChip(
                 selected = selectedCategory == null,
@@ -253,9 +271,8 @@ private fun CategoryFilters(
                 label = { Text("All") }
             )
         }
-        
-        // Category filters
-        items(Category.entries) { category ->
+        items(Category.entries.size) { index ->
+            val category = Category.entries[index]
             FilterChip(
                 selected = selectedCategory == category,
                 onClick = { onCategorySelected(category) },
@@ -265,11 +282,6 @@ private fun CategoryFilters(
     }
 }
 
-/**
- * Individual article card.
- * 
- * This is a reusable, stateless component.
- */
 @Composable
 fun ArticleCard(
     article: Article,
@@ -282,10 +294,7 @@ fun ArticleCard(
         modifier = modifier.clickable(onClick = onArticleClick),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp)
-        ) {
-            // Header with title and favorite button
+        Column(modifier = Modifier.padding(16.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -298,31 +307,17 @@ fun ArticleCard(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                
-                IconButton(
-                    onClick = { onFavoriteClick(!isFavorite) }
-                ) {
+                IconButton(onClick = { onFavoriteClick(!isFavorite) }) {
                     Icon(
-                        imageVector = if (isFavorite) {
-                            Icons.Default.Favorite
-                        } else {
-                            Icons.Default.FavoriteBorder
-                        },
-                        contentDescription = if (isFavorite) {
-                            "Remove from favorites"
-                        } else {
-                            "Add to favorites"
-                        },
-                        tint = if (isFavorite) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
+                        imageVector = if (isFavorite) Icons.Default.Favorite
+                        else Icons.Default.FavoriteBorder,
+                        contentDescription = if (isFavorite) "Remove from favorites"
+                        else "Add to favorites",
+                        tint = if (isFavorite) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
-            
-            // Description
             Text(
                 text = article.description,
                 style = MaterialTheme.typography.bodyMedium,
@@ -330,12 +325,8 @@ fun ArticleCard(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 8.dp)
             )
-            
-            // Metadata
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
@@ -343,9 +334,9 @@ fun ArticleCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                
                 Text(
-                    text = formatDate(article.publishedAt),
+                    text = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
+                        .format(article.publishedAt),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -355,80 +346,19 @@ fun ArticleCard(
 }
 
 /**
- * Empty state when no articles match filter.
+ * Converts a raw [Throwable] from Paging's [LoadState.Error] into a message
+ * suitable for display to the user.
+ *
+ * Users don't need to see stack traces or HTTP jargon — they need to know
+ * whether the problem is on their end (no internet) or the server's end.
  */
-@Composable
-private fun EmptyState(
-    selectedCategory: Category?,
-    modifier: Modifier = Modifier
-) {
-    Box(
-        modifier = modifier,
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = if (selectedCategory != null) {
-                    "No ${selectedCategory.displayName.lowercase()} articles found"
-                } else {
-                    "No articles available"
-                },
-                style = MaterialTheme.typography.bodyLarge
-            )
-            Text(
-                text = "Try selecting a different category",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
-
-/**
- * Error state composable.
- */
-@Composable
-private fun ErrorState(
-    message: String,
-    canRetry: Boolean,
-    onRetry: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Box(
-        modifier = modifier,
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text(
-                text = "Oops! Something went wrong",
-                style = MaterialTheme.typography.titleMedium
-            )
-            
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            
-            if (canRetry) {
-                Button(onClick = onRetry) {
-                    Text("Retry")
-                }
-            }
-        }
-    }
-}
-
-/**
- * Format date for display.
- */
-private fun formatDate(date: java.util.Date): String {
-    val formatter = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
-    return formatter.format(date)
+private fun friendlyErrorMessage(throwable: Throwable): String = when {
+    throwable is java.io.IOException -> "No internet connection. Pull down to retry."
+    throwable is retrofit2.HttpException && throwable.code() == 401 ->
+        "Invalid API key. Check your NewsAPI configuration."
+    throwable is retrofit2.HttpException && throwable.code() == 429 ->
+        "Too many requests. Please wait a moment and retry."
+    throwable is retrofit2.HttpException ->
+        "Server error (${throwable.code()}). Please try again."
+    else -> "An unexpected error occurred. Please try again."
 }

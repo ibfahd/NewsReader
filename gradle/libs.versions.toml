@@ -16,9 +16,25 @@ hilt = "2.59.2"
 hiltNavigationCompose = "1.3.0"
 room = "2.8.4"
 datastore = "1.2.1"
-androidxTestRunner = "1.6.2"
+androidxTestRunner = "1.7.0"
+# ── Ch.7: Networking ──────────────────────────────────────────────────────────
+# Retrofit is the HTTP client abstraction. It turns an interface of annotated
+# methods into fully implemented network calls at runtime.
+retrofit = "3.0.0"
+# OkHttp is the underlying HTTP engine Retrofit delegates to. We add it
+# explicitly to use its interceptor API (logging, API key injection).
+okhttp = "5.3.2"
+# Moshi parses JSON into Kotlin data classes. We use KSP codegen (not
+# reflection) — the adapters are generated at compile time, which is faster
+# and avoids the overhead of reading annotations at runtime.
+moshi = "1.15.2"
+# ── Ch.7: Paging 3 ───────────────────────────────────────────────────────────
+# Paging 3 is Google's library for loading large datasets in chunks,
+# integrating with Room (PagingSource) and the network (RemoteMediator).
+paging = "3.4.2"
 
 [libraries]
+# ── Existing ──────────────────────────────────────────────────────────────────
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activity" }
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
@@ -51,10 +67,33 @@ turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine
 hilt-android-testing = { group = "com.google.dagger", name = "hilt-android-testing", version.ref = "hilt" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
 
+# ── Ch.7: Retrofit ─────────────────────────────────────────────────────────────
+retrofit = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit" }
+# The Moshi converter tells Retrofit to use Moshi for JSON ↔ Kotlin conversion.
+retrofit-converter-moshi = { group = "com.squareup.retrofit2", name = "converter-moshi", version.ref = "retrofit" }
+
+# ── Ch.7: OkHttp ───────────────────────────────────────────────────────────────
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+# HttpLoggingInterceptor prints the full request/response to Logcat in debug builds.
+# NEVER include it in release builds — it logs headers which can expose secrets.
+okhttp-logging = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "okhttp" }
+
+# ── Ch.7: Moshi ────────────────────────────────────────────────────────────────
+# Core Moshi library + Kotlin support (null safety, default params, data classes).
+moshi-kotlin = { group = "com.squareup.moshi", name = "moshi-kotlin", version.ref = "moshi" }
+# KSP annotation processor — generates type-safe JsonAdapters at compile time.
+# This is the preferred approach over moshi-kotlin-reflect (reflection at runtime).
+moshi-kotlin-codegen = { group = "com.squareup.moshi", name = "moshi-kotlin-codegen", version.ref = "moshi" }
+
+# ── Ch.7: Paging 3 ─────────────────────────────────────────────────────────────
+paging-runtime = { group = "androidx.paging", name = "paging-runtime", version.ref = "paging" }
+# Compose integration: provides collectAsLazyPagingItems() and LazyPagingItems.
+paging-compose = { group = "androidx.paging", name = "paging-compose", version.ref = "paging" }
+# Room + Paging bridge: enables @Query functions that return PagingSource<Int, T>.
+room-paging = { group = "androidx.room", name = "room-paging", version.ref = "room" }
+
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
-# kotlin-android is intentionally ABSENT.
-# AGP 9.0+ has built-in Kotlin support and actively rejects kotlin.android.
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 hilt-android = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
